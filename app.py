@@ -1,76 +1,64 @@
-from flask import Flask, request
-from flask_socketio import SocketIO, emit
-import time
-import threading
-import os
+import asyncio
+import websockets
+import json
 
-app = Flask(__name__)
-app.config['SECRET_KEY'] = 'modbus-tunnel-secret'
-socketio = SocketIO(app, cors_allowed_origins="*")
+connected_esp32 = None
+connected_clients = set()
 
-esp32_socket = None
-client_sockets = set()
+async def handle_connection(websocket, path):
+    global connected_esp32
+    
+    print(f"Client connected: {websocket.remote_address}")
+    
+    try:
+        # İlk mesajı al (kayıt)
+        message = await websocket.recv()
+        print(f"İlk mesaj: {message}")
+        
+        if message == "esp32_register":
+            connected_esp32 = websocket
+            await websocket.send("esp32_confirmed")
+            print("ESP32 registered")
+            
+            # ESP32'den gelen mesajları dinle
+            async for message in websocket:
+                print(f"ESP32'den: {message}")
+                # Tüm client'lara gönder
+                for client in connected_clients:
+                    try:
+                        await client.send(message)
+                    except:
+                        connected_clients.remove(client)
+                        
+        elif message == "client_register":
+            connected_clients.add(websocket)
+            await websocket.send("client_confirmed")
+            print("WPLSoft client registered")
+            
+            # Client'tan gelen mesajları dinle
+            async for message in websocket:
+                print(f"Client'tan: {message}")
+                # ESP32'ye gönder
+                if connected_esp32:
+                    try:
+                        await connected_esp32.send(message)
+                    except:
+                        connected_esp32 = None
+        else:
+            print(f"Bilinmeyen mesaj: {message}")
+            
+    except websockets.exceptions.ConnectionClosed:
+        print("Client disconnected")
+        if websocket == connected_esp32:
+            connected_esp32 = None
+            print("ESP32 disconnected")
+        connected_clients.discard(websocket)
 
+async def main():
+    print("WebSocket sunucusu başlatılıyor...")
+    server = await websockets.serve(handle_connection, "0.0.0.0", 5000)
+    print("Sunucu başlatıldı: 0.0.0.0:5000")
+    await server.wait_closed()
 
-@app.route('/')
-def index():
-    return f"Modbus Tunnel Server - {time.strftime('%Y-%m-%d %H:%M:%S')}"
-
-
-@socketio.on('connect')
-def handle_connect():
-    print(f'Client connected: {request.sid}')
-
-
-@socketio.on('disconnect')
-def handle_disconnect():
-    global esp32_socket
-    print(f'Client disconnected: {request.sid}')
-
-    if request.sid == esp32_socket:
-        esp32_socket = None
-        print('ESP32 disconnected')
-    else:
-        client_sockets.discard(request.sid)
-
-
-@socketio.on('esp32_register')
-def handle_esp32_register():
-    global esp32_socket
-    esp32_socket = request.sid
-    print('ESP32 registered')
-    emit('esp32_confirmed')
-
-
-@socketio.on('client_register')
-def handle_client_register():
-    client_sockets.add(request.sid)
-    print('WPLSoft client registered')
-    emit('client_confirmed')
-
-
-@socketio.on('modbus_data')
-def handle_modbus_data(data):
-    if request.sid == esp32_socket:
-        # ESP32'den gelen veriyi WPLSoft'a ilet
-        for client_sid in client_sockets:
-            socketio.emit('modbus_data', data, room=client_sid)
-    else:
-        # WPLSoft'tan gelen veriyi ESP32'ye ilet
-        if esp32_socket:
-            socketio.emit('modbus_data', data, room=esp32_socket)
-
-
-def keep_alive():
-    while True:
-        time.sleep(300)  # 5 dakikada bir
-        print(f"Keep-alive ping - {time.strftime('%H:%M:%S')}")
-        socketio.emit('ping', {'timestamp': time.time()})
-
-
-# Background thread
-threading.Thread(target=keep_alive, daemon=True).start()
-
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    socketio.run(app, host='0.0.0.0', port=port, allow_unsafe_werkzeug=True)
+if __name__ == "__main__":
+    asyncio.run(main())
