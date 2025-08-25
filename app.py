@@ -1,17 +1,17 @@
 import asyncio
 import websockets
 import os
+from aiohttp import web
 
 connected_esp32 = None
 connected_clients = set()
 
-async def handle_connection(websocket, path):
+async def websocket_handler(websocket, path):
     global connected_esp32
     
-    print(f"Client connected: {websocket.remote_address}, path: {path}")
+    print(f"WebSocket client connected: {websocket.remote_address}")
     
     try:
-        # İlk mesajı al (kayıt)
         message = await websocket.recv()
         print(f"İlk mesaj: {message}")
         
@@ -20,10 +20,7 @@ async def handle_connection(websocket, path):
             await websocket.send("esp32_confirmed")
             print("ESP32 registered")
             
-            # ESP32'den gelen mesajları dinle
             async for message in websocket:
-                print(f"ESP32'den: {message}")
-                # Tüm client'lara gönder
                 for client in connected_clients.copy():
                     try:
                         await client.send(message)
@@ -33,50 +30,56 @@ async def handle_connection(websocket, path):
         elif message == "client_register":
             connected_clients.add(websocket)
             await websocket.send("client_confirmed")
-            print("WPLSoft client registered")
+            print("Client registered")
             
-            # Client'tan gelen mesajları dinle
             async for message in websocket:
-                print(f"Client'tan: {message}")
-                # ESP32'ye gönder
                 if connected_esp32:
                     try:
                         await connected_esp32.send(message)
                     except:
                         connected_esp32 = None
         else:
-            print(f"Bilinmeyen mesaj: {message}")
             await websocket.close()
             
     except websockets.exceptions.ConnectionClosed:
-        print("Client disconnected")
+        print("WebSocket client disconnected")
         if websocket == connected_esp32:
             connected_esp32 = None
-            print("ESP32 disconnected")
-        connected_clients.discard(websocket)
 
-async def health_check(path, request_headers):
-    """Render health check için"""
-    if path == "/health":
-        return 200, [], b"OK"
-    return None
+async def health_check(request):
+    return web.Response(text="OK")
+
+async def start_websocket_server():
+    port = int(os.environ.get("PORT", 5000))
+    print(f"WebSocket server starting on port {port}")
+    
+    # WebSocket server
+    ws_server = await websockets.serve(websocket_handler, "0.0.0.0", port)
+    print(f"WebSocket server started on port {port}")
+    return ws_server
+
+async def start_http_server():
+    # HTTP server for health checks
+    app = web.Application()
+    app.router.add_get('/health', health_check)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    
+    # HTTP server farklı bir portta çalışsın
+    site = web.TCPSite(runner, '0.0.0.0', 5001)
+    await site.start()
+    print("HTTP health check server started on port 5001")
 
 async def main():
-    port = int(os.environ.get("PORT", 5000))
-    print(f"WebSocket sunucusu başlatılıyor... Port: {port}")
-    
-    # Sadece WebSocket server başlat
-    server = await websockets.serve(
-        handle_connection, 
-        "0.0.0.0", 
-        port,
-        process_request=health_check
+    # Hem HTTP hem WebSocket serverları başlat
+    await asyncio.gather(
+        start_websocket_server(),
+        start_http_server()
     )
     
-    print(f"Sunucu başlatıldı: 0.0.0.0:{port}")
-    print("ESP32 bağlantısını bekliyor...")
-    
-    await server.wait_closed()
+    # Sonsuz döngü
+    await asyncio.Future()
 
 if __name__ == "__main__":
     asyncio.run(main())
