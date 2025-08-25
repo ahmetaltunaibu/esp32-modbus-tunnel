@@ -1,28 +1,13 @@
 import asyncio
 import websockets
-from websockets import WebSocketServerProtocol
-import json
 import os
-from http import HTTPStatus
-import asyncio
 
 connected_esp32 = None
 connected_clients = set()
 
-async def health_check(path, request_headers):
-    """Render health check için HEAD request'leri handle et"""
-    if path == "/health":
-        return HTTPStatus.OK, [], b"OK\n"
-    return None
-
-async def handle_connection(websocket: WebSocketServerProtocol, path: str):
+async def handle_connection(websocket, path):
     global connected_esp32
     
-    # Health check endpoint'i
-    if path == "/health":
-        await websocket.close()
-        return
-        
     print(f"Client connected: {websocket.remote_address}, path: {path}")
     
     try:
@@ -70,11 +55,17 @@ async def handle_connection(websocket: WebSocketServerProtocol, path: str):
             print("ESP32 disconnected")
         connected_clients.discard(websocket)
 
+async def health_check(path, request_headers):
+    """Render health check için"""
+    if path == "/health":
+        return 200, [], b"OK"
+    return None
+
 async def main():
     port = int(os.environ.get("PORT", 5000))
     print(f"WebSocket sunucusu başlatılıyor... Port: {port}")
     
-    # Health check handler ile server oluştur
+    # Sadece WebSocket server başlat
     server = await websockets.serve(
         handle_connection, 
         "0.0.0.0", 
@@ -85,22 +76,7 @@ async def main():
     print(f"Sunucu başlatıldı: 0.0.0.0:{port}")
     print("ESP32 bağlantısını bekliyor...")
     
-    # Health check endpoint için basit HTTP server
-    async def http_handler(reader, writer):
-        data = await reader.read(100)
-        message = data.decode()
-        if message.startswith('HEAD /health') or message.startswith('GET /health'):
-            writer.write(b'HTTP/1.1 200 OK\r\n\r\n')
-            await writer.drain()
-        writer.close()
-    
-    # HTTP health check server
-    http_server = await asyncio.start_server(http_handler, '0.0.0.0', port)
-    
-    await asyncio.gather(
-        server.wait_closed(),
-        http_server.wait_closed()
-    )
+    await server.wait_closed()
 
 if __name__ == "__main__":
     asyncio.run(main())
