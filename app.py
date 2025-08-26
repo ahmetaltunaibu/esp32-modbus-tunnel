@@ -1,68 +1,63 @@
-from flask import Flask, request
-from flask_socketio import SocketIO, emit
-import time
-import threading
+import asyncio
+import websockets
+import json
 import os
-
-app = Flask(__name__)
-app.config['SECRET_KEY'] = 'modbus-tunnel-secret'
-socketio = SocketIO(app, cors_allowed_origins="*")
+from datetime import datetime
 
 esp32_socket = None
 client_sockets = set()
 
-@app.route('/')
-def index():
-    return f"Modbus Tunnel Server - {time.strftime('%Y-%m-%d %H:%M:%S')}"
-
-@socketio.on('connect')
-def handle_connect():
-    print(f'Client connected: {request.sid}')
-
-@socketio.on('disconnect')
-def handle_disconnect():
+async def handle_client(websocket, path):
     global esp32_socket
-    print(f'Client disconnected: {request.sid}')
     
-    if request.sid == esp32_socket:
-        esp32_socket = None
-        print('ESP32 disconnected')
-    else:
-        client_sockets.discard(request.sid)
+    print(f"New connection: {websocket.remote_address}")
+    
+    try:
+        async for message in websocket:
+            print(f"Message: {message}")
+            
+            if message == "esp32_register":
+                esp32_socket = websocket
+                await websocket.send("esp32_confirmed")
+                print("ESP32 registered successfully")
+                
+            elif message == "client_register":
+                client_sockets.add(websocket)
+                await websocket.send("client_confirmed")
+                print("WPLSoft client registered")
+                
+            else:
+                # Modbus data forwarding
+                if websocket == esp32_socket:
+                    # ESP32 -> WPLSoft clients
+                    for client in client_sockets.copy():
+                        try:
+                            await client.send(message)
+                        except:
+                            client_sockets.discard(client)
+                            
+                else:
+                    # WPLSoft -> ESP32
+                    if esp32_socket:
+                        try:
+                            await esp32_socket.send(message)
+                        except:
+                            esp32_socket = None
+                            
+    except websockets.exceptions.ConnectionClosed:
+        if websocket == esp32_socket:
+            esp32_socket = None
+            print("ESP32 disconnected")
+        else:
+            client_sockets.discard(websocket)
+            print("Client disconnected")
 
-@socketio.on('esp32_register')
-def handle_esp32_register():
-    global esp32_socket
-    esp32_socket = request.sid
-    print('ESP32 registered')
-    emit('esp32_confirmed')
-
-@socketio.on('client_register')
-def handle_client_register():
-    client_sockets.add(request.sid)
-    print('WPLSoft client registered')
-    emit('client_confirmed')
-
-@socketio.on('modbus_data')
-def handle_modbus_data(data):
-    if request.sid == esp32_socket:
-        # ESP32'den gelen veriyi WPLSoft'a ilet
-        for client_sid in client_sockets:
-            socketio.emit('modbus_data', data, room=client_sid)
-    else:
-        # WPLSoft'tan gelen veriyi ESP32'ye ilet
-        if esp32_socket:
-            socketio.emit('modbus_data', data, room=esp32_socket)
-
-def keep_alive():
-    while True:
-        time.sleep(300)  # 5 dakikada bir
-        print(f"Keep-alive ping - {time.strftime('%H:%M:%S')}")
-        socketio.emit('ping', {'timestamp': time.time()})
-
-# Background thread
-threading.Thread(target=keep_alive, daemon=True).start()
-
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    socketio.run(app, host='0.0.0.0', port=port, allow_unsafe_werkzeug=True)
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8000))
+    print(f"Starting WebSocket server on port {port}")
+    
+    start_server = websockets.serve(handle_client, "0.0.0.0", port)
+    
+    asyncio.get_event_loop().run_until_complete(start_server)
+    print("WebSocket server running...")
+    asyncio.get_event_loop().run_forever()
