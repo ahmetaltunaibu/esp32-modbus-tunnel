@@ -1,63 +1,73 @@
-import socket
-import threading
-import time
+import asyncio
+import websockets
+import json
+import os
+from datetime import datetime
+from aiohttp import web, WSMsgType
+import aiohttp_cors
 
-ESP32_HOST = None
-ESP32_PORT = None
 esp32_socket = None
+client_sockets = set()
 
-class TCPProxy:
-    def __init__(self, listen_port=502):
-        self.listen_port = listen_port
-        self.server_socket = None
-        
-    def start(self):
-        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.server_socket.bind(('0.0.0.0', self.listen_port))
-        self.server_socket.listen(5)
-        
-        print(f"TCP Proxy listening on port {self.listen_port}")
-        
-        while True:
-            try:
-                client_socket, client_addr = self.server_socket.accept()
-                print(f"WPLSoft connected: {client_addr}")
-                
-                # ESP32 bağlantısı kur
-                esp32_conn = self.connect_to_esp32()
-                
-                if esp32_conn:
-                    # İki yönlü proxy başlat
-                    threading.Thread(target=self.proxy_data, 
-                                   args=(client_socket, esp32_conn, "WPLSoft->ESP32")).start()
-                    threading.Thread(target=self.proxy_data, 
-                                   args=(esp32_conn, client_socket, "ESP32->WPLSoft")).start()
-                else:
-                    client_socket.close()
-                    
-            except Exception as e:
-                print(f"Proxy error: {e}")
+async def handle_websocket(websocket, path):
+    global esp32_socket
     
-    def connect_to_esp32(self):
-        # Bu kısım ESP32'nin sunucuya nasıl bağlanacağını belirler
-        # Reverse tunnel mantığı gerekli
-        return None
-        
-    def proxy_data(self, source, destination, direction):
-        try:
-            while True:
-                data = source.recv(4096)
-                if not data:
-                    break
-                destination.send(data)
-                print(f"{direction}: {len(data)} bytes")
-        except:
-            pass
-        finally:
-            source.close()
-            destination.close()
+    print(f"WebSocket connection: {websocket.remote_address}")
+    
+    try:
+        async for message in websocket:
+            if message == "esp32_register":
+                esp32_socket = websocket
+                await websocket.send("esp32_confirmed")
+                print("ESP32 registered")
+            elif message == "client_register":
+                client_sockets.add(websocket)
+                await websocket.send("client_confirmed") 
+                print("Client registered")
+            else:
+                # Data forwarding
+                if websocket == esp32_socket:
+                    for client in client_sockets.copy():
+                        try:
+                            await client.send(message)
+                        except:
+                            client_sockets.discard(client)
+                else:
+                    if esp32_socket:
+                        try:
+                            await esp32_socket.send(message)
+                        except:
+                            esp32_socket = None
+    except:
+        if websocket == esp32_socket:
+            esp32_socket = None
+        else:
+            client_sockets.discard(websocket)
+
+async def http_handler(request):
+    return web.Response(text=f"Modbus Tunnel Server - {datetime.now()}")
+
+async def init_app():
+    app = web.Application()
+    app.router.add_get('/', http_handler)
+    
+    return app
 
 if __name__ == "__main__":
-    proxy = TCPProxy()
-    proxy.start()
+    port = int(os.environ.get("PORT", 8000))
+    
+    # HTTP server
+    app = asyncio.get_event_loop().run_until_complete(init_app())
+    
+    # WebSocket server
+    start_server = websockets.serve(handle_websocket, "0.0.0.0", port + 1)
+    
+    # HTTP server start
+    runner = web.AppRunner(app)
+    asyncio.get_event_loop().run_until_complete(runner.setup())
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    asyncio.get_event_loop().run_until_complete(site.start())
+    
+    print(f"HTTP server: {port}, WebSocket: {port + 1}")
+    asyncio.get_event_loop().run_until_complete(start_server)
+    asyncio.get_event_loop().run_forever()
