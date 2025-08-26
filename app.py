@@ -274,12 +274,21 @@ def handle_http_request(client_socket, client_addr):
         except:
             pass
 
+# main fonksiyonunu düzelt:
 if __name__ == "__main__":
     print("Starting Port-Separated Modbus TCP Tunnel Server")
-    print(f"Render PORT environment: {os.environ.get('PORT', 'Not set')}")
     
-    # Modbus TCP server'ı ayrı thread'de başlat
-    threading.Thread(target=start_modbus_tcp_server, daemon=True).start()
+    # Port 502 zorunlu başlatma
+    try:
+        modbus_thread = threading.Thread(target=start_modbus_tcp_server, daemon=False)
+        modbus_thread.start()
+        print("Port 502 Modbus server thread started")
+    except Exception as e:
+        print(f"Port 502 start error: {e}")
     
-    # Ana thread HTTP/WebSocket server'ı çalıştır
+    # 2 saniye bekle
+    time.sleep(2)
+    
+    # Ana HTTP server
     start_http_websocket_server()
+
