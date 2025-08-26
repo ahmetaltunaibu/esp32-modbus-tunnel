@@ -3,11 +3,18 @@ import websockets
 import json
 import os
 from datetime import datetime
-from aiohttp import web, WSMsgType
-import aiohttp_cors
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import threading
 
 esp32_socket = None
 client_sockets = set()
+
+class HTTPHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/html')
+        self.end_headers()
+        self.wfile.write(f"Modbus Tunnel Server - {datetime.now()}".encode())
 
 async def handle_websocket(websocket, path):
     global esp32_socket
@@ -22,10 +29,9 @@ async def handle_websocket(websocket, path):
                 print("ESP32 registered")
             elif message == "client_register":
                 client_sockets.add(websocket)
-                await websocket.send("client_confirmed") 
+                await websocket.send("client_confirmed")
                 print("Client registered")
             else:
-                # Data forwarding
                 if websocket == esp32_socket:
                     for client in client_sockets.copy():
                         try:
@@ -44,30 +50,24 @@ async def handle_websocket(websocket, path):
         else:
             client_sockets.discard(websocket)
 
-async def http_handler(request):
-    return web.Response(text=f"Modbus Tunnel Server - {datetime.now()}")
-
-async def init_app():
-    app = web.Application()
-    app.router.add_get('/', http_handler)
-    
-    return app
+def start_http_server():
+    port = int(os.environ.get("PORT", 8000))
+    httpd = HTTPServer(("0.0.0.0", port), HTTPHandler)
+    print(f"HTTP server starting on port {port}")
+    httpd.serve_forever()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
     
-    # HTTP server
-    app = asyncio.get_event_loop().run_until_complete(init_app())
+    # HTTP server thread
+    http_thread = threading.Thread(target=start_http_server)
+    http_thread.daemon = True
+    http_thread.start()
     
     # WebSocket server
-    start_server = websockets.serve(handle_websocket, "0.0.0.0", port + 1)
+    ws_port = port + 1000  # Farklı port
+    start_server = websockets.serve(handle_websocket, "0.0.0.0", ws_port)
     
-    # HTTP server start
-    runner = web.AppRunner(app)
-    asyncio.get_event_loop().run_until_complete(runner.setup())
-    site = web.TCPSite(runner, '0.0.0.0', port)
-    asyncio.get_event_loop().run_until_complete(site.start())
-    
-    print(f"HTTP server: {port}, WebSocket: {port + 1}")
+    print(f"WebSocket server starting on port {ws_port}")
     asyncio.get_event_loop().run_until_complete(start_server)
     asyncio.get_event_loop().run_forever()
