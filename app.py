@@ -1,42 +1,14 @@
-# Render app.py - Port 502 Modbus TCP Server
+# Render app.py - Port Ayırımlı Modbus TCP Server
 
 import socket
 import threading
 import time
 import json
 import os
-from http.server import HTTPServer, BaseHTTPRequestHandler
-import struct
 
 # Global connections
 esp32_connection = None
 esp32_lock = threading.Lock()
-virtual_connections = {}
-
-class TunnelHTTPHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header('Content-Type', 'text/html')
-        self.end_headers()
-        
-        status = f"""
-        <h1>Modbus TCP Tunnel Server</h1>
-        <p>Time: {time.strftime('%Y-%m-%d %H:%M:%S')}</p>
-        <p>ESP32 Status: {'Connected' if esp32_connection else 'Disconnected'}</p>
-        <p>Active Virtual Connections: {len(virtual_connections)}</p>
-        <hr>
-        <h3>WPLSoft Bağlantı Bilgileri:</h3>
-        <p><strong>Host:</strong> esp32-modbus-tunnel.onrender.com</p>
-        <p><strong>Port:</strong> 502</p>
-        <p><strong>Protocol:</strong> Modbus TCP</p>
-        <p><strong>Unit ID:</strong> 1</p>
-        <hr>
-        <p>Bu server Render.com üzerinde çalışıyor ve ESP32 cihazınız üzerinden PLC bağlantısı sağlıyor.</p>
-        """
-        self.wfile.write(status.encode())
-        
-    def log_message(self, format, *args):
-        return  # HTTP logging'i kapat
 
 class ModbusTCPHandler:
     def __init__(self, client_socket, client_addr):
@@ -53,13 +25,6 @@ class ModbusTCPHandler:
                 # WPLSoft'tan Modbus TCP al
                 data = self.client_socket.recv(1024)
                 if not data:
-                    break
-                
-                # HTTP request kontrolü - eğer HTTP ise kapat
-                if data.startswith(b'GET') or data.startswith(b'HEAD') or data.startswith(b'POST'):
-                    # HTTP response gönder ve bağlantıyı kapat
-                    http_response = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
-                    self.client_socket.send(http_response)
                     break
                 
                 # Modbus TCP minimum uzunluk kontrolü
@@ -130,7 +95,7 @@ class ModbusTCPHandler:
 def handle_esp32_connection(esp32_sock, addr):
     global esp32_connection
     
-    print(f"ESP32 reverse connection from: {addr}")
+    print(f"ESP32 WebSocket connection from: {addr}")
     
     with esp32_lock:
         # Eski bağlantıyı kapat
@@ -142,9 +107,7 @@ def handle_esp32_connection(esp32_sock, addr):
         esp32_connection = esp32_sock
     
     try:
-        esp32_sock.settimeout(60.0)  # 60 saniye timeout
-        
-        # ESP32 registration'ı oku
+        # ESP32 WebSocket registration'ı oku
         registration = ""
         while "\r\n\r\n" not in registration:
             chunk = esp32_sock.recv(1024)
@@ -152,10 +115,18 @@ def handle_esp32_connection(esp32_sock, addr):
                 break
             registration += chunk.decode('utf-8', errors='ignore')
             
-        print(f"ESP32 registration received: {registration[:100]}...")
+        print(f"ESP32 WebSocket handshake: {registration[:200]}...")
         
-        # Registration başarılı response
-        esp32_sock.send(b"REGISTRATION_OK\r\n")
+        # WebSocket/HTTP response gönder
+        response = "HTTP/1.1 200 OK\r\n"
+        response += "Content-Type: text/plain\r\n"
+        response += "Connection: keep-alive\r\n\r\n"
+        response += "ESP32_REGISTERED"
+        
+        esp32_sock.send(response.encode())
+        esp32_sock.settimeout(60.0)
+        
+        print("ESP32 WebSocket registered successfully")
         
         # ESP32'den gelen verileri işle
         while True:
@@ -167,12 +138,12 @@ def handle_esp32_connection(esp32_sock, addr):
                     
                 # Heartbeat kontrolü
                 if b'HEARTBEAT' in data:
-                    esp32_sock.send(b"HEARTBEAT_OK\n")
+                    esp32_sock.send(b"HTTP/1.1 200 OK\r\n\r\nOK")
                     print("ESP32 heartbeat received")
                 else:
                     # Normal Modbus TCP yanıtı
                     hex_data = data.hex()
-                    print(f"ESP32 data: {hex_data}")
+                    print(f"ESP32 response data: {hex_data}")
                     
             except socket.timeout:
                 print("ESP32 heartbeat timeout")
@@ -193,29 +164,17 @@ def handle_esp32_connection(esp32_sock, addr):
             pass
         print("ESP32 disconnected")
 
-def start_port_502_server():
-    """Port 502'de Modbus TCP server başlat"""
+def start_modbus_tcp_server():
+    """Sadece Modbus TCP Server - Port 502"""
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     
     try:
-        # Önce 502 portunu dene
         server.bind(('0.0.0.0', 502))
-        print("Modbus TCP Server started on port 502 (Standard Modbus port)")
-        
-    except PermissionError:
-        # Root yetkisi yoksa Render'ın verdiği portu kullan
-        render_port = int(os.environ.get('PORT', 10000))
-        server.bind(('0.0.0.0', render_port))
-        print(f"Port 502 için yetki yok, port {render_port} kullanılıyor")
-        print("NOT: WPLSoft'ta port 502 yerine port {} kullanın".format(render_port))
-        
+        print("Modbus TCP Server started on port 502")
     except Exception as e:
-        # Port 502 kullanılamıyorsa Render'ın verdiği portu kullan
-        render_port = int(os.environ.get('PORT', 10000))
-        server.bind(('0.0.0.0', render_port))
-        print(f"Port 502 kullanılamadı ({e}), port {render_port} kullanılıyor")
-        print("NOT: WPLSoft'ta port 502 yerine port {} kullanın".format(render_port))
+        print(f"Port 502 bind error: {e}")
+        return
     
     server.listen(10)
     
@@ -223,37 +182,52 @@ def start_port_502_server():
         try:
             client_socket, client_addr = server.accept()
             
-            # İlk birkaç byte'a bakarak HTTP mi TCP mi karar ver
+            # Direkt ModbusTCPHandler - detection yok
+            handler = ModbusTCPHandler(client_socket, client_addr)
+            threading.Thread(target=handler.handle, daemon=True).start()
+                
+        except Exception as e:
+            print(f"Modbus server accept error: {e}")
+            time.sleep(1)
+
+def start_http_websocket_server():
+    """HTTP/WebSocket Server - Render PORT"""
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    
+    port = int(os.environ.get('PORT', 10000))
+    server.bind(('0.0.0.0', port))
+    server.listen(10)
+    
+    print(f"HTTP/WebSocket server started on port {port}")
+    
+    while True:
+        try:
+            client_socket, client_addr = server.accept()
+            
+            # HTTP/WebSocket detection
             client_socket.settimeout(2.0)
             try:
-                first_bytes = client_socket.recv(12, socket.MSG_PEEK)
+                first_bytes = client_socket.recv(20, socket.MSG_PEEK)
                 client_socket.settimeout(None)
                 
-                # Modbus TCP frame kontrolü (Transaction ID + Protocol ID)
-                if len(first_bytes) >= 8 and first_bytes[2:4] == b'\x00\x00':
-                    # Modbus TCP request
-                    handler = ModbusTCPHandler(client_socket, client_addr)
-                    threading.Thread(target=handler.handle, daemon=True).start()
-                elif first_bytes.startswith(b'GET ') or first_bytes.startswith(b'POST'):
+                if first_bytes.startswith(b'GET ') or first_bytes.startswith(b'POST'):
                     # HTTP request - status handler
                     threading.Thread(target=handle_http_request, 
                                    args=(client_socket, client_addr), daemon=True).start()
-                elif first_bytes.startswith(b'ESP32_REGISTER'):
-                    # ESP32 registration request
+                else:
+                    # ESP32 WebSocket/registration
                     threading.Thread(target=handle_esp32_connection, 
                                    args=(client_socket, client_addr), daemon=True).start()
-                else:
-                    # Default: Modbus TCP
-                    handler = ModbusTCPHandler(client_socket, client_addr)
-                    threading.Thread(target=handler.handle, daemon=True).start()
+                                   
             except socket.timeout:
-                # Timeout olursa Modbus TCP olarak kabul et
+                # Timeout - ESP32 olarak kabul et
                 client_socket.settimeout(None)
-                handler = ModbusTCPHandler(client_socket, client_addr)
-                threading.Thread(target=handler.handle, daemon=True).start()
+                threading.Thread(target=handle_esp32_connection, 
+                               args=(client_socket, client_addr), daemon=True).start()
                 
         except Exception as e:
-            print(f"Server accept error: {e}")
+            print(f"HTTP server accept error: {e}")
             time.sleep(1)
 
 def handle_http_request(client_socket, client_addr):
@@ -278,15 +252,15 @@ def handle_http_request(client_socket, client_addr):
         <h1>Modbus TCP Tunnel Server</h1>
         <p>Time: {time.strftime('%Y-%m-%d %H:%M:%S')}</p>
         <p>ESP32 Status: {'Connected' if esp32_connection else 'Disconnected'}</p>
-        <p>Active Connections: {len(virtual_connections)}</p>
         <hr>
         <h3>WPLSoft Bağlantı Bilgileri:</h3>
-        <p><strong>Host:</strong> esp32-modbus-tunnel.onrender.com</p>
-        <p><strong>Port:</strong> 502 (veya {os.environ.get('PORT', '10000')})</p>
+        <p><strong>IP:</strong> 216.24.57.7 (veya güncel server IP)</p>
+        <p><strong>Port:</strong> 502</p>
         <p><strong>Protocol:</strong> Modbus TCP</p>
         <p><strong>Unit ID:</strong> 1</p>
         <hr>
         <p>Bu server ESP32 cihazınız üzerinden PLC bağlantısı sağlıyor.</p>
+        <p>Modbus TCP: Port 502 | HTTP Status: Port {os.environ.get('PORT', '10000')}</p>
 </body>
 </html>"""
         
@@ -300,41 +274,12 @@ def handle_http_request(client_socket, client_addr):
         except:
             pass
 
-def start_health_check_server():
-    """Render.com için health check server (farklı port)"""
-    health_port = int(os.environ.get('PORT', 10000))
-    
-    def health_server():
-        health_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        health_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        
-        try:
-            health_sock.bind(('0.0.0.0', health_port))
-            health_sock.listen(5)
-            print(f"Health check server started on port {health_port}")
-            
-            while True:
-                client, addr = health_sock.accept()
-                try:
-                    # Basit HTTP response
-                    response = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK"
-                    client.send(response)
-                except:
-                    pass
-                finally:
-                    client.close()
-                    
-        except Exception as e:
-            print(f"Health server error: {e}")
-    
-    threading.Thread(target=health_server, daemon=True).start()
-
 if __name__ == "__main__":
-    print("Starting Modbus TCP Tunnel Server for Port 502")
+    print("Starting Port-Separated Modbus TCP Tunnel Server")
     print(f"Render PORT environment: {os.environ.get('PORT', 'Not set')}")
     
-    # Health check server'ı başlat (Render.com için gerekli)
-    start_health_check_server()
+    # Modbus TCP server'ı ayrı thread'de başlat
+    threading.Thread(target=start_modbus_tcp_server, daemon=True).start()
     
-    # Ana Modbus TCP server'ı başlat (port 502'yi dene)
-    start_port_502_server()
+    # Ana thread HTTP/WebSocket server'ı çalıştır
+    start_http_websocket_server()
