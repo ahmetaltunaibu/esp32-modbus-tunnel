@@ -229,7 +229,12 @@ def start_port_502_server():
                 first_bytes = client_socket.recv(12, socket.MSG_PEEK)
                 client_socket.settimeout(None)
                 
-                if first_bytes.startswith(b'GET ') or first_bytes.startswith(b'POST'):
+                # Modbus TCP frame kontrolü (Transaction ID + Protocol ID)
+                if len(first_bytes) >= 8 and first_bytes[2:4] == b'\x00\x00':
+                    # Modbus TCP request
+                    handler = ModbusTCPHandler(client_socket, client_addr)
+                    threading.Thread(target=handler.handle, daemon=True).start()
+                elif first_bytes.startswith(b'GET ') or first_bytes.startswith(b'POST'):
                     # HTTP request - status handler
                     threading.Thread(target=handle_http_request, 
                                    args=(client_socket, client_addr), daemon=True).start()
@@ -238,7 +243,7 @@ def start_port_502_server():
                     threading.Thread(target=handle_esp32_connection, 
                                    args=(client_socket, client_addr), daemon=True).start()
                 else:
-                    # Modbus TCP request
+                    # Default: Modbus TCP
                     handler = ModbusTCPHandler(client_socket, client_addr)
                     threading.Thread(target=handler.handle, daemon=True).start()
             except socket.timeout:
