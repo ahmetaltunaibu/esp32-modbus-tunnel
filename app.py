@@ -144,6 +144,19 @@ def handle_esp32_connection(esp32_sock, addr):
     try:
         esp32_sock.settimeout(60.0)  # 60 saniye timeout
         
+        # ESP32 registration'ı oku
+        registration = ""
+        while "\r\n\r\n" not in registration:
+            chunk = esp32_sock.recv(1024)
+            if not chunk:
+                break
+            registration += chunk.decode('utf-8', errors='ignore')
+            
+        print(f"ESP32 registration received: {registration[:100]}...")
+        
+        # Registration başarılı response
+        esp32_sock.send(b"REGISTRATION_OK\r\n")
+        
         # ESP32'den gelen verileri işle
         while True:
             try:
@@ -213,14 +226,14 @@ def start_port_502_server():
             # İlk birkaç byte'a bakarak HTTP mi TCP mi karar ver
             client_socket.settimeout(2.0)
             try:
-                first_bytes = client_socket.recv(4, socket.MSG_PEEK)
+                first_bytes = client_socket.recv(12, socket.MSG_PEEK)
                 client_socket.settimeout(None)
                 
                 if first_bytes.startswith(b'GET ') or first_bytes.startswith(b'POST'):
                     # HTTP request - status handler
                     threading.Thread(target=handle_http_request, 
                                    args=(client_socket, client_addr), daemon=True).start()
-                elif first_bytes.startswith(b'HEAD'):
+                elif first_bytes.startswith(b'ESP32_REGISTER'):
                     # ESP32 registration request
                     threading.Thread(target=handle_esp32_connection, 
                                    args=(client_socket, client_addr), daemon=True).start()
